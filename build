@@ -1,0 +1,2 @@
+#!/bin/bash
+gcc -o main -framework GLUT -framework OpenGL -fopenmp $1
