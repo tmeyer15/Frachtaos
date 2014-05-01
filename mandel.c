@@ -6,16 +6,23 @@
 #define pi 3.1415926
 #define ORBIT_DEPTH 255
 
-double xmin,ymin,xmax,ymax;
-int w_mandel=400,h_mandel=300;
-int w=400,h=300;
+//#define VERBOSE
 
+double xmin,ymin,xmax,ymax;
+int w_mandel=400*2,h_mandel=300*2;
+int w=400*2,h=300*2;
 
 typedef struct point
 {
 	double x;
 	double y;
 } point;
+
+typedef struct intpoint
+{
+	int x;
+	int y;
+} intpoint;
 
 typedef struct rgb
 {
@@ -24,10 +31,20 @@ typedef struct rgb
 	float b;
 } rgb;
 
+//Represents the bounds of the mandelbrot (so usually, (-2,-1)->(1,1))
+point* startCoord;
+point* endCoord;
+
+//color scheme (plug in the number of iterations to get the color)
 rgb* colorScheme;
+
+//Final display color for each pixel of the fractal only (no lines drawn)
 rgb* pixels;
-point* orbitDraw;
-point* center;
+
+//The point of the orbit that is to be drawn
+intpoint* orbitDraw;
+
+//a matrix of arrays that contain all of the points in each orbit - a lot of memory!
 point*** orbits;
 
 //Returns the sqaure magnitude of the vector/complex number
@@ -36,6 +53,7 @@ double squarMag(point* p)
 	return p->x * p->x + p->y * p->y;
 }
 
+//Give it the old complex number and c, returns the next complex number using the mandelbrot mapping
 point* mandelMap(point* oldPoint, point* c)
 {
 	point* newPoint = (point*) malloc(sizeof(point));
@@ -45,10 +63,12 @@ point* mandelMap(point* oldPoint, point* c)
 	return newPoint;
 }
 
-void mandelbrot(int width, int height, rgb* pixelsToFill)
+//give it the width and height of the window size you want to fill
+//give it an array that can fit all those pixels
+//give it a widthxheight array of point** that it will fill with points from each pixel's orbit
+void mandelbrot(int width, int height, rgb* pixelsToFill, point*** allOrbits)
 {
 	int j;
-	point*** createOrbits = (point***) malloc(sizeof(point**) * height * width);
 	#pragma omp parallel for
 	for (j = 0; j < height; j++)
 	{
@@ -56,45 +76,45 @@ void mandelbrot(int width, int height, rgb* pixelsToFill)
 		for (i = 0; i < width; i++)
 		{
 			int fillPixel = j * width + i;
-			createOrbits[fillPixel] = (point**) malloc(sizeof(point*) * ORBIT_DEPTH);
-			
 			point* originPoint = (point*) malloc(sizeof(point));
-			originPoint->x = -2.0 + 4.0 * i / width;
-			originPoint->y = -1.5 + 3.0 * j / height;
+			originPoint->x = i * (endCoord->x - startCoord->x) / width + startCoord->x;
+			originPoint->y = j * (endCoord->y - startCoord->y) / height + startCoord->y;
 			
-			createOrbits[fillPixel][0] = originPoint;
+			allOrbits[fillPixel] = (point**) malloc(sizeof(point*) * ORBIT_DEPTH);
+			allOrbits[fillPixel][0] = originPoint;
 			
 			point* newPoint = (point*) malloc(sizeof(point));
-			newPoint->x = -2.0 + 4.0 * i / width;
-			newPoint->y = -1.5 + 3.0 * j / height;
+			newPoint->x = originPoint->x;
+			newPoint->y = originPoint->y;
 			
 			int iterCount = 1;
 			
 			newPoint = mandelMap(newPoint, originPoint);
-			createOrbits[fillPixel][iterCount] = newPoint;
+			allOrbits[fillPixel][iterCount] = newPoint;
 			
 			while (iterCount < ORBIT_DEPTH && squarMag(newPoint) < 4.0)
 			{
 				newPoint = mandelMap(newPoint, originPoint);
 				iterCount++;
-				createOrbits[fillPixel][iterCount] = newPoint;
+				allOrbits[fillPixel][iterCount] = newPoint;
 			}
 			
 			if (iterCount != ORBIT_DEPTH)
 			{
-				createOrbits[fillPixel][iterCount+1] = NULL;
+				allOrbits[fillPixel][iterCount+1] = NULL;
 			}
 			
 			pixelsToFill[fillPixel] = colorScheme[iterCount];
 			//pixelsToFill[fillPixel].r = iterCount / 255.;
 		}
 	}
-	orbits = createOrbits;
 }
 
 void display(void)
 {
+	#ifdef VERBOSE
 	printf("Redraw\n");
+	#endif
 	glClearColor(1, 1, 1, 0);
 	glClear(GL_COLOR_BUFFER_BIT);
 	
@@ -102,12 +122,16 @@ void display(void)
 	
 	if (orbits != NULL)
 	{
+		#ifdef VERBOSE
 		printf("begin draw orbit\n");
+		#endif
 		glBegin(GL_LINES);
 		glColor3f(1.0,0.0,0.0);
 		glLineWidth (1.0);
 		int orbitToDraw = (h_mandel - orbitDraw->y - 1) * w_mandel + orbitDraw->x;
+		#ifdef VERBOSE
 		printf("(x,y)=(%d,%d)\n", (int)orbitDraw->x, (int)orbitDraw->y);
+		#endif
 		int x;
 		for (x = 1; x < ORBIT_DEPTH; x++)
 		{
@@ -115,12 +139,22 @@ void display(void)
 			{
 				break;
 			}
+			#ifdef VERBOSE
 			printf("(x,y)=(%9.8f,%9.8f)\n",orbits[orbitToDraw][x]->x,orbits[orbitToDraw][x]->y);
-			glVertex2f(orbits[orbitToDraw][x-1]->x / 2.0, orbits[orbitToDraw][x-1]->y * 2.0 / 3.0);
-			glVertex2f(orbits[orbitToDraw][x]->x / 2.0  , orbits[orbitToDraw][x]->y * 2.0 / 3.0);
+			#endif	
+			
+			double xscale = endCoord->x - startCoord->x;
+			double yscale = endCoord->y - startCoord->y;
+			double xaverage = (endCoord->x + startCoord->x) / 2.0;
+			double yaverage = (endCoord->y + startCoord->y) / 2.0;
+			glVertex2f((orbits[orbitToDraw][x-1]->x - startCoord->x) * 2.0 / xscale - 1.0, (orbits[orbitToDraw][x-1]->y - startCoord->y) * 2.0 / yscale - 1.0);
+			glVertex2f((orbits[orbitToDraw][x]->x - startCoord->x) * 2.0 / xscale - 1.0, (orbits[orbitToDraw][x]->y - startCoord->y) * 2.0 / yscale - 1.0);
 		}
 		glEnd();
+		
+		#ifdef VERBOSE
 		printf("end draw orbit\n");
+		#endif
 	}
 	glutSwapBuffers();
 }
@@ -133,7 +167,9 @@ void mouse(int button,int state,int xscr,int yscr)
 		{
 			orbitDraw->x = xscr;
 			orbitDraw->y = yscr;
+			#ifdef VERBOSE
 			printf("(x,y)=(%d,%d)\n",xscr,yscr);
+			#endif
 			glutPostRedisplay(); // callback
 		}
 	}
@@ -176,8 +212,10 @@ void reshape(int wscr,int hscr)
 		gluOrtho2D(xmin,xmax,ymin,ymax);
 		glMatrixMode(GL_MODELVIEW);
 
+		point*** createOrbits = (point***) malloc(sizeof(point**) * h * w);
 		rgb* newPixels = (rgb*) malloc(sizeof(rgb) * h * w);
-		mandelbrot(w, h, newPixels);
+		mandelbrot(w, h, newPixels, createOrbits);
+		orbits = createOrbits;
 		
 		//Now that we've done the computation, set the new mandelbrot pixels
 		rgb* oldPixels = pixels;
@@ -227,18 +265,24 @@ int main(int argc, char** argv)
 		}
 	}
 
-	orbitDraw = (point*) malloc(sizeof(point));
-	orbitDraw->x = 0.0;
-	orbitDraw->y = 0.0;
+	orbitDraw = (intpoint*) malloc(sizeof(intpoint));
+	orbitDraw->x = 0;
+	orbitDraw->y = 0;
+	
+	startCoord = (point*) malloc(sizeof(point));
+	startCoord->x = -3.0;
+	startCoord->y = -2.0;
+	
+	endCoord = (point*) malloc(sizeof(point));
+	endCoord->x = 2.0;
+	endCoord->y = 1.5;
 	
 	orbits = NULL;
 	
-	center = (point*) malloc(sizeof(point));
-	center->x = 0.0;
-	center->y = 0.0;
-	
+	point*** createOrbits = (point***) malloc(sizeof(point**) * h_mandel * w_mandel);
 	pixels = (rgb*) malloc(sizeof(rgb) * w_mandel * h_mandel);
-	mandelbrot(w, h, pixels);
+	mandelbrot(w, h, pixels, createOrbits);
+	orbits = createOrbits;
 	
 	glutMainLoop();					// here we go!
 	
