@@ -1,16 +1,24 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include <GLUT/glut.h>
 
 #define pi 3.1415926
-#define ORBIT_DEPTH 255
+#define ORBIT_DEPTH 16000
+#define DRAW_DEPTH 999
 
 //#define VERBOSE
 
+#define START_X_RESOLUTION 400*2
+#define START_Y_RESOLUTION 300*2
+
+char stringOfNumberOfIterations[50];
 double xmin,ymin,xmax,ymax;
-int w_mandel=400*2,h_mandel=300*2;
-int w=400*2,h=300*2;
+int w_mandel=START_X_RESOLUTION,h_mandel=START_Y_RESOLUTION;
+int w=START_X_RESOLUTION,h=START_Y_RESOLUTION;
+
+//void (*mappingFunction)(point*, point*) = juliaMap;
 
 typedef struct point
 {
@@ -41,11 +49,16 @@ rgb* colorScheme;
 //Final display color for each pixel of the fractal only (no lines drawn)
 rgb* pixels;
 
-//The point of the orbit that is to be drawn
-intpoint* orbitDraw;
 
-//a matrix of arrays that contain all of the points in each orbit - a lot of memory!
-point*** orbits;
+point* orbitMappingToDraw;
+int numPointsToDraw;
+
+void drawString(char* s)
+{
+	int k;
+	for(k=0;k<strlen(s);k++)
+		glutBitmapCharacter(GLUT_BITMAP_TIMES_ROMAN_24, s[k]);
+}
 
 //Returns the sqaure magnitude of the vector/complex number
 double squarMag(point* p)
@@ -54,19 +67,68 @@ double squarMag(point* p)
 }
 
 //Give it the old complex number and c, returns the next complex number using the mandelbrot mapping
-point* mandelMap(point* oldPoint, point* c)
+void mandelMap(point* oldPoint, point* c)
 {
-	point* newPoint = (point*) malloc(sizeof(point));
 	double tmp = oldPoint->x * oldPoint->x - oldPoint->y * oldPoint->y + c->x;
-	newPoint->y = 2 * oldPoint->x * oldPoint->y + c->y;
-	newPoint->x = tmp;
-	return newPoint;
+	oldPoint->y = 2 * oldPoint->x * oldPoint->y + c->y;
+	oldPoint->x = tmp;
+}
+
+#define JULIA_CONST_ONE -0.8
+#define JULIA_CONST_TWO 0.156
+void juliaMap(point* oldPoint, point* nothing)
+{
+	double tmp = oldPoint->x * oldPoint->x - oldPoint->y * oldPoint->y + JULIA_CONST_ONE;
+	oldPoint->y = 2 * oldPoint->x * oldPoint->y + JULIA_CONST_TWO;
+	oldPoint->x = tmp;
+}
+
+/* Iterates the mapping until it escapes or reaches ORBIT_DEPTH
+   Send an array of points of size ORBIT_DEPTH to get a null terminated
+   list of all of the points in the mapping, or send null to ignore
+ */
+rgb iterateMapping(int i, int j, int width, int height, point* pointsInOrbit, int* numPointsInOrbit, void (*mapFunction)(point*, point*), int depthToSearch)
+{
+	point originPoint;
+	originPoint.x = i * (endCoord->x - startCoord->x) / width + startCoord->x;
+	originPoint.y = j * (endCoord->y - startCoord->y) / height + startCoord->y;
+	
+	if (pointsInOrbit != NULL)
+	{
+		*numPointsInOrbit = 0;
+		pointsInOrbit[0].x = originPoint.x;
+		pointsInOrbit[0].y = originPoint.y;
+		(*numPointsInOrbit)++;
+	}
+	
+	point newPoint;
+	newPoint.x = originPoint.x;
+	newPoint.y = originPoint.y;
+	
+	int iterCount = 1;
+	
+	mandelMap(&newPoint, &originPoint);
+	
+	while (iterCount < depthToSearch && squarMag(&newPoint) < 4.0)
+	{
+		if (pointsInOrbit != NULL)
+		{
+			pointsInOrbit[iterCount].x = newPoint.x;
+			pointsInOrbit[iterCount].y = newPoint.y;
+			(*numPointsInOrbit)++;
+		}
+		
+		mapFunction(&newPoint, &originPoint);
+		iterCount++;
+	}
+	
+	return colorScheme[iterCount];
 }
 
 //give it the width and height of the window size you want to fill
 //give it an array that can fit all those pixels
 //give it a widthxheight array of point** that it will fill with points from each pixel's orbit
-void mandelbrot(int width, int height, rgb* pixelsToFill, point*** allOrbits)
+void paintMapping(int width, int height, rgb* pixelsToFill, void (*mapFunction)(point*, point*))
 {
 	int j;
 	#pragma omp parallel for
@@ -76,36 +138,7 @@ void mandelbrot(int width, int height, rgb* pixelsToFill, point*** allOrbits)
 		for (i = 0; i < width; i++)
 		{
 			int fillPixel = j * width + i;
-			point* originPoint = (point*) malloc(sizeof(point));
-			originPoint->x = i * (endCoord->x - startCoord->x) / width + startCoord->x;
-			originPoint->y = j * (endCoord->y - startCoord->y) / height + startCoord->y;
-			
-			allOrbits[fillPixel] = (point**) malloc(sizeof(point*) * ORBIT_DEPTH);
-			allOrbits[fillPixel][0] = originPoint;
-			
-			point* newPoint = (point*) malloc(sizeof(point));
-			newPoint->x = originPoint->x;
-			newPoint->y = originPoint->y;
-			
-			int iterCount = 1;
-			
-			newPoint = mandelMap(newPoint, originPoint);
-			allOrbits[fillPixel][iterCount] = newPoint;
-			
-			while (iterCount < ORBIT_DEPTH && squarMag(newPoint) < 4.0)
-			{
-				newPoint = mandelMap(newPoint, originPoint);
-				iterCount++;
-				allOrbits[fillPixel][iterCount] = newPoint;
-			}
-			
-			if (iterCount != ORBIT_DEPTH)
-			{
-				allOrbits[fillPixel][iterCount+1] = NULL;
-			}
-			
-			pixelsToFill[fillPixel] = colorScheme[iterCount];
-			//pixelsToFill[fillPixel].r = iterCount / 255.;
+			pixelsToFill[fillPixel] = iterateMapping(i, j, width, height, NULL, NULL, mapFunction, DRAW_DEPTH);
 		}
 	}
 }
@@ -117,40 +150,71 @@ void display(void)
 	#endif
 	glClearColor(1, 1, 1, 0);
 	glClear(GL_COLOR_BUFFER_BIT);
-	
+	glRasterPos2f(-1.0,-1.0);
 	glDrawPixels(w_mandel, h_mandel, GL_RGB, GL_FLOAT, pixels);
 	
-	if (orbits != NULL)
+	if (orbitMappingToDraw != NULL)
 	{
-		#ifdef VERBOSE
-		printf("begin draw orbit\n");
-		#endif
-		glBegin(GL_LINES);
-		glColor3f(1.0,0.0,0.0);
-		glLineWidth (1.0);
-		int orbitToDraw = (h_mandel - orbitDraw->y - 1) * w_mandel + orbitDraw->x;
-		#ifdef VERBOSE
-		printf("(x,y)=(%d,%d)\n", (int)orbitDraw->x, (int)orbitDraw->y);
-		#endif
+		int periodOfOrbit = 0;
+		//Find if the orbit is chaotic or not
 		int x;
-		for (x = 1; x < ORBIT_DEPTH; x++)
+		for (x = numPointsToDraw - 1; x >= 0; x--)
 		{
-			if (orbits[orbitToDraw][x] == NULL)
+			int y;
+			for (y = x - 1; y >= 0 ; y--)
+			{
+				if (orbitMappingToDraw[x].x == orbitMappingToDraw[y].x && orbitMappingToDraw[x].y == orbitMappingToDraw[y].y)
+				{
+					periodOfOrbit = (int) abs(x - y);
+					break;
+				}
+			}
+			if (periodOfOrbit)
 			{
 				break;
 			}
+		}
+		printf("%d\n", periodOfOrbit);
+		
+		glColor3f(1.0,1.0,1.0);
+		
+		sprintf(stringOfNumberOfIterations, "Periodicity: %d", periodOfOrbit);
+		glRasterPos2f(-.99, .90);//position of the text
+		drawString(stringOfNumberOfIterations);
+		
+		char* chaoticOrNot;
+		if (periodOfOrbit)
+		{
+			chaoticOrNot = "Not Chaotic";
+		}
+		else
+		{
+			chaoticOrNot = "Chaotic";
+		}
+		glRasterPos2f(-.99, .80);//position of the text
+		drawString(chaoticOrNot);
+		
+		#ifdef VERBOSE
+		printf("begin draw orbit\n");
+		#endif
+		glColor3f(1.0,0.0,0.0);
+		glBegin(GL_LINES);
+		glLineWidth (1.0);
+		//Draw all of the points in the orbit
+		
+		for (x = 1; x < numPointsToDraw; x++)
+		{
 			#ifdef VERBOSE
-			printf("(x,y)=(%9.8f,%9.8f)\n",orbits[orbitToDraw][x]->x,orbits[orbitToDraw][x]->y);
+			printf("(x,y)=(%9.8f,%9.8f)\n",orbitMappingToDraw[x].x,orbitMappingToDraw[x].y);
 			#endif	
 			
 			double xscale = endCoord->x - startCoord->x;
 			double yscale = endCoord->y - startCoord->y;
-			double xaverage = (endCoord->x + startCoord->x) / 2.0;
-			double yaverage = (endCoord->y + startCoord->y) / 2.0;
-			glVertex2f((orbits[orbitToDraw][x-1]->x - startCoord->x) * 2.0 / xscale - 1.0, (orbits[orbitToDraw][x-1]->y - startCoord->y) * 2.0 / yscale - 1.0);
-			glVertex2f((orbits[orbitToDraw][x]->x - startCoord->x) * 2.0 / xscale - 1.0, (orbits[orbitToDraw][x]->y - startCoord->y) * 2.0 / yscale - 1.0);
+			glVertex2f((orbitMappingToDraw[x-1].x - startCoord->x) * 2.0 / xscale - 1.0, (orbitMappingToDraw[x-1].y - startCoord->y) * 2.0 / yscale - 1.0);
+			glVertex2f((orbitMappingToDraw[x].x - startCoord->x) * 2.0 / xscale - 1.0, (orbitMappingToDraw[x].y - startCoord->y) * 2.0 / yscale - 1.0); 
 		}
 		glEnd();
+		
 		
 		#ifdef VERBOSE
 		printf("end draw orbit\n");
@@ -165,11 +229,16 @@ void mouse(int button,int state,int xscr,int yscr)
 	{
 		if(state==GLUT_DOWN)
 		{
-			orbitDraw->x = xscr;
-			orbitDraw->y = yscr;
 			#ifdef VERBOSE
 			printf("(x,y)=(%d,%d)\n",xscr,yscr);
 			#endif
+			
+			iterateMapping(xscr, h-yscr, w, h, orbitMappingToDraw, &numPointsToDraw, mandelMap, ORBIT_DEPTH);
+			
+			#ifdef VERBOSE
+			printf("Iterations of orbit: (%d)\n", numPointsToDraw);
+			#endif
+			
 			glutPostRedisplay(); // callback
 		}
 	}
@@ -179,6 +248,7 @@ void motion(int xscr,int yscr)
 {
 	
 }
+
 void keyfunc(unsigned char key,int xscr,int yscr)
 {
 	if(key=='q')
@@ -191,12 +261,13 @@ void reshape(int wscr,int hscr)
 {
 		
 	//We only want to update if the window is changed by a large enough amount
-	if (abs(wscr - w_mandel) > 50 || abs(hscr - h_mandel) > 50)
-	{
+	//if (abs(wscr - w_mandel) > 50 || abs(hscr - h_mandel) > 50)
+	//{
 		w=wscr; h=hscr;
 			
 		//Not really sure what this does. I'm leaving it in because it was in
 		//a previous project from a long time ago in a classroom far far away
+	/*
 		glViewport(0,0,(GLsizei)w,(GLsizei)h);
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
@@ -210,12 +281,11 @@ void reshape(int wscr,int hscr)
 			xmax=1.0*(GLdouble)w/(GLdouble)h;
 		}
 		gluOrtho2D(xmin,xmax,ymin,ymax);
-		glMatrixMode(GL_MODELVIEW);
+		glMatrixMode(GL_MODELVIEW);*/
 
-		point*** createOrbits = (point***) malloc(sizeof(point**) * h * w);
+	
 		rgb* newPixels = (rgb*) malloc(sizeof(rgb) * h * w);
-		mandelbrot(w, h, newPixels, createOrbits);
-		orbits = createOrbits;
+		paintMapping(w, h, newPixels, mandelMap);
 		
 		//Now that we've done the computation, set the new mandelbrot pixels
 		rgb* oldPixels = pixels;
@@ -223,7 +293,7 @@ void reshape(int wscr,int hscr)
 		w_mandel = w;
 		h_mandel = h;
 		free (oldPixels);
-	}
+	//}
 }
 
 int main(int argc, char** argv)
@@ -264,10 +334,6 @@ int main(int argc, char** argv)
 			}
 		}
 	}
-
-	orbitDraw = (intpoint*) malloc(sizeof(intpoint));
-	orbitDraw->x = 0;
-	orbitDraw->y = 0;
 	
 	startCoord = (point*) malloc(sizeof(point));
 	startCoord->x = -3.0;
@@ -275,14 +341,11 @@ int main(int argc, char** argv)
 	
 	endCoord = (point*) malloc(sizeof(point));
 	endCoord->x = 2.0;
-	endCoord->y = 1.5;
+	endCoord->y = 2.0;
 	
-	orbits = NULL;
-	
-	point*** createOrbits = (point***) malloc(sizeof(point**) * h_mandel * w_mandel);
+	orbitMappingToDraw = (point*) malloc(sizeof(point) * ORBIT_DEPTH);
 	pixels = (rgb*) malloc(sizeof(rgb) * w_mandel * h_mandel);
-	mandelbrot(w, h, pixels, createOrbits);
-	orbits = createOrbits;
+	paintMapping(w, h, pixels, mandelMap);
 	
 	glutMainLoop();					// here we go!
 	
